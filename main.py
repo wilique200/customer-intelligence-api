@@ -45,9 +45,14 @@ MODEL_FILES = [
 
 app = FastAPI(title="Customer Intelligence API")
 
+# Comma-separated list if you ever need more than one (e.g. a Vercel
+# preview URL alongside the production one). Defaults to "*" until you
+# have a real frontend URL to lock it to.
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGIN", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten this to your actual frontend domain before going live
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
