@@ -11,3 +11,5 @@ services:
         value: wilique200-daniel/customer-intelligence-churn-model
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: GEMINI_API_KEY
+        sync: false
