@@ -94,6 +94,37 @@ RAW_COLUMN_DEFAULTS = {
 }
 
 
+NUMERIC_COLUMNS = {
+    "age", "annual_income", "dependents", "tenure", "senior_citizen",
+    "monthlycharges", "totalcharges", "num_services", "has_phone_service",
+    "has_internet_service", "has_online_security", "has_online_backup",
+    "has_device_protection", "has_tech_support", "has_streaming_tv",
+    "has_streaming_movies", "customer_satisfaction", "num_complaints",
+    "num_service_calls", "late_payments", "avg_monthly_gb",
+    "days_since_last_interaction", "credit_score",
+}
+
+
+def coerce_numeric_columns(df: pd.DataFrame):
+    """A column existing isn't the same as it being usable — real CSVs
+    often store numbers as text: blanks, 'N/A', currency symbols, comma
+    thousand-separators. (The classic Telco Kaggle churn dataset famously
+    stores TotalCharges as a string with blank values for brand-new
+    customers — that's what triggered this.) Clean what can be cleaned,
+    fall back to the column's default for whatever still can't be parsed."""
+    df = df.copy()
+    coerced = []
+    for col in NUMERIC_COLUMNS:
+        if col in df.columns and df[col].dtype == object:
+            cleaned = df[col].astype(str).str.replace(r"[$,]", "", regex=True).str.strip()
+            numeric = pd.to_numeric(cleaned, errors="coerce")
+            if numeric.isna().any():
+                numeric = numeric.fillna(RAW_COLUMN_DEFAULTS.get(col, 0))
+                coerced.append(col)
+            df[col] = numeric
+    return df, coerced
+
+
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Match uploaded column names to expected ones regardless of case or
     formatting — 'MonthlyCharges', 'Monthly Charges', and 'monthly_charges'
@@ -216,6 +247,7 @@ async def predict_churn(file: UploadFile = File(...)):
 
     raw_df = normalize_columns(raw_df)
     raw_df, defaulted_columns = fill_missing_columns(raw_df)
+    raw_df, coerced_columns = coerce_numeric_columns(raw_df)
 
     customer_ids = raw_df["customer_id"] if "customer_id" in raw_df.columns else pd.Series(range(len(raw_df)))
 
@@ -242,10 +274,16 @@ async def predict_churn(file: UploadFile = File(...)):
         })
 
     warning = None
-    if defaulted_columns:
-        pct_missing = len(defaulted_columns) / len(RAW_COLUMN_DEFAULTS)
+    flagged_cols = defaulted_columns + coerced_columns
+    if flagged_cols:
+        pct_missing = len(flagged_cols) / len(RAW_COLUMN_DEFAULTS)
         severity = "Predictions may be unreliable" if pct_missing > 0.3 else "Minor impact on accuracy"
-        warning = f"{severity} — {len(defaulted_columns)} column(s) not found in your upload, using estimated defaults: {', '.join(defaulted_columns)}"
+        parts = []
+        if defaulted_columns:
+            parts.append(f"not found (estimated): {', '.join(defaulted_columns)}")
+        if coerced_columns:
+            parts.append(f"had unusable values, cleaned (some estimated): {', '.join(coerced_columns)}")
+        warning = f"{severity} — " + "; ".join(parts)
 
     return {
         "threshold": round(threshold * 100, 1),
