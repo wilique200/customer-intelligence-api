@@ -23,15 +23,23 @@ them explicitly next time you retrain, for exact train/serve consistency.
 """
 
 import os
+import json
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from io import StringIO
 from huggingface_hub import hf_hub_download
 
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "your-hf-username/customer-intelligence-churn-model")
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Model naming on the free tier shifts fairly often — if this 404s, check
+# the current model list at aistudio.google.com and swap the name below.
+GEMINI_MODEL = "gemini-2.0-flash-lite"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 MODEL_FILES = [
     "final_catboost_model.pkl",
@@ -125,17 +133,65 @@ def coerce_numeric_columns(df: pd.DataFrame):
     return df, coerced
 
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Match uploaded column names to expected ones regardless of case or
-    formatting — 'MonthlyCharges', 'Monthly Charges', and 'monthly_charges'
-    all match 'monthlycharges'."""
+def normalize_columns(df: pd.DataFrame):
+    """First pass: cheap, deterministic, free — case/format-insensitive
+    matching. Returns the renamed df, plus whatever uploaded columns
+    still don't match anything (candidates for the LLM fallback below)
+    and which expected columns are still unmatched."""
     normalized_expected = {c.lower().replace(" ", "").replace("_", ""): c for c in RAW_COLUMN_DEFAULTS}
     rename_map = {}
     for col in df.columns:
         key = col.lower().replace(" ", "").replace("_", "")
         if key in normalized_expected:
             rename_map[col] = normalized_expected[key]
-    return df.rename(columns=rename_map)
+    df = df.rename(columns=rename_map)
+    matched_expected = set(rename_map.values())
+    unmatched_uploaded = [c for c in df.columns if c not in RAW_COLUMN_DEFAULTS]
+    still_missing_expected = [c for c in RAW_COLUMN_DEFAULTS if c not in matched_expected and c not in df.columns]
+    return df, unmatched_uploaded, still_missing_expected
+
+
+def llm_map_columns(unmatched_uploaded: list, still_missing_expected: list) -> dict:
+    """Ask Gemini to semantically match uploaded column names the cheap
+    pass couldn't resolve (e.g. 'Bill Amount' vs 'monthlycharges')
+    against schema columns still missing. Only called on the leftover
+    ambiguous cases, not every column — and only ever sees column
+    names, never actual customer data. No-ops safely if no API key is
+    set yet, or if anything about the call goes wrong."""
+    if not GEMINI_API_KEY or not unmatched_uploaded or not still_missing_expected:
+        return {}
+
+    prompt = f"""You are matching CSV column names to a fixed schema for a churn prediction model.
+Uploaded columns with no obvious match: {unmatched_uploaded}
+Schema columns still needing a match: {still_missing_expected}
+
+Return ONLY a JSON object mapping uploaded column name -> schema column name,
+including only genuinely confident semantic matches (e.g. "Bill Amount" ->
+"monthlycharges" is confident; do not guess when unsure). Omit any uploaded
+column with no confident match. Return just the JSON object, nothing else."""
+
+    try:
+        resp = requests.post(
+            GEMINI_URL,
+            params={"key": GEMINI_API_KEY},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        text = text.strip()
+        for fence in ("```json", "```"):
+            if text.startswith(fence):
+                text = text[len(fence):]
+            if text.endswith("```"):
+                text = text[:-3]
+        mapping = json.loads(text.strip())
+        # Only trust entries that reference real columns on both sides —
+        # never blindly apply whatever the model returns
+        return {k: v for k, v in mapping.items() if k in unmatched_uploaded and v in still_missing_expected}
+    except Exception as e:
+        print(f"WARNING: Gemini column mapping failed, continuing without it: {e}")
+        return {}
 
 
 def fill_missing_columns(df: pd.DataFrame):
@@ -245,7 +301,10 @@ async def predict_churn(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
 
-    raw_df = normalize_columns(raw_df)
+    raw_df, unmatched_uploaded, still_missing_expected = normalize_columns(raw_df)
+    llm_mapping = llm_map_columns(unmatched_uploaded, still_missing_expected)
+    if llm_mapping:
+        raw_df = raw_df.rename(columns=llm_mapping)
     raw_df, defaulted_columns = fill_missing_columns(raw_df)
     raw_df, coerced_columns = coerce_numeric_columns(raw_df)
 
@@ -275,14 +334,17 @@ async def predict_churn(file: UploadFile = File(...)):
 
     warning = None
     flagged_cols = defaulted_columns + coerced_columns
-    if flagged_cols:
+    if flagged_cols or llm_mapping:
         pct_missing = len(flagged_cols) / len(RAW_COLUMN_DEFAULTS)
-        severity = "Predictions may be unreliable" if pct_missing > 0.3 else "Minor impact on accuracy"
+        severity = "Predictions may be unreliable" if pct_missing > 0.3 else "Minor impact on accuracy" if flagged_cols else "Data looks complete"
         parts = []
         if defaulted_columns:
             parts.append(f"not found (estimated): {', '.join(defaulted_columns)}")
         if coerced_columns:
             parts.append(f"had unusable values, cleaned (some estimated): {', '.join(coerced_columns)}")
+        if llm_mapping:
+            matches = ", ".join(f"'{k}' -> {v}" for k, v in llm_mapping.items())
+            parts.append(f"AI-matched column names: {matches}")
         warning = f"{severity} — " + "; ".join(parts)
 
     return {
