@@ -76,6 +76,50 @@ def load_models():
         print(f"WARNING: failed to load models from HF Hub ({HF_REPO_ID}) — /api/churn/predict will fail until this is fixed. {e}")
 
 
+# Every raw column the model needs, with a reasonable default drawn from
+# training-time statistics (exact for the 5 columns that had real
+# training-time missingness; a sensible estimate for the rest, since exact
+# medians/modes for those weren't saved as an artifact — worth doing
+# properly next retrain).
+RAW_COLUMN_DEFAULTS = {
+    "age": 45, "gender": "Male", "annual_income": 48954.6, "education": "bachelor",
+    "marital_status": "married", "dependents": 1, "tenure": 16, "contract": "one_year",
+    "payment_method": "credit_card", "paperless_billing": "Yes", "senior_citizen": 0,
+    "monthlycharges": 85.0, "totalcharges": 1250.0, "num_services": 2,
+    "has_phone_service": 1, "has_internet_service": 1, "has_online_security": 0,
+    "has_online_backup": 0, "has_device_protection": 0, "has_tech_support": 0,
+    "has_streaming_tv": 1, "has_streaming_movies": 1, "customer_satisfaction": 7.0,
+    "num_complaints": 1.0, "num_service_calls": 2, "late_payments": 0,
+    "avg_monthly_gb": 27.77, "days_since_last_interaction": 31, "credit_score": 680.0,
+}
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Match uploaded column names to expected ones regardless of case or
+    formatting — 'MonthlyCharges', 'Monthly Charges', and 'monthly_charges'
+    all match 'monthlycharges'."""
+    normalized_expected = {c.lower().replace(" ", "").replace("_", ""): c for c in RAW_COLUMN_DEFAULTS}
+    rename_map = {}
+    for col in df.columns:
+        key = col.lower().replace(" ", "").replace("_", "")
+        if key in normalized_expected:
+            rename_map[col] = normalized_expected[key]
+    return df.rename(columns=rename_map)
+
+
+def fill_missing_columns(df: pd.DataFrame):
+    """Never crash on an incomplete upload — fill any genuinely missing
+    expected column with a reasonable default, and report exactly what
+    was defaulted so results stay honest instead of silently guessing."""
+    df = df.copy()
+    defaulted = []
+    for col, default_val in RAW_COLUMN_DEFAULTS.items():
+        if col not in df.columns:
+            df[col] = default_val
+            defaulted.append(col)
+    return df, defaulted
+
+
 def preprocess_customer_data(df: pd.DataFrame, feature_columns: list) -> pd.DataFrame:
     df = df.copy()
 
@@ -113,7 +157,7 @@ def preprocess_customer_data(df: pd.DataFrame, feature_columns: list) -> pd.Data
     return df[feature_columns]
 
 
-def explain_risk(row: pd.Series) -> str:
+def explain_risk(row: pd.Series, risk_pct: float) -> str:
     """Rule-based explanation from the EDA findings, standing in for SHAP
     until that's added alongside the sentiment integration."""
     if row.get("short_tenure_mtm", 0) == 1:
@@ -126,6 +170,8 @@ def explain_risk(row: pd.Series) -> str:
         return "Low customer satisfaction"
     if row.get("num_service_calls", 0) >= 5:
         return "High service call volume"
+    if risk_pct < 30:
+        return "No major risk factors identified"
     return "Elevated risk on multiple factors"
 
 
@@ -168,12 +214,12 @@ async def predict_churn(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
 
+    raw_df = normalize_columns(raw_df)
+    raw_df, defaulted_columns = fill_missing_columns(raw_df)
+
     customer_ids = raw_df["customer_id"] if "customer_id" in raw_df.columns else pd.Series(range(len(raw_df)))
 
-    try:
-        X = preprocess_customer_data(raw_df, _models["feature_columns"])
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing expected column in upload: {e}")
+    X = preprocess_customer_data(raw_df, _models["feature_columns"])
 
     X_scaled = _models["scaler"].transform(X)
 
@@ -192,12 +238,19 @@ async def predict_churn(file: UploadFile = File(...)):
             "customer_id": str(customer_ids.iloc[i]),
             "risk_score": risk_pct,
             "flagged": bool(risk_scores[i] >= threshold),
-            "reason": explain_risk(X.iloc[i]),
+            "reason": explain_risk(X.iloc[i], risk_pct),
         })
+
+    warning = None
+    if defaulted_columns:
+        pct_missing = len(defaulted_columns) / len(RAW_COLUMN_DEFAULTS)
+        severity = "Predictions may be unreliable" if pct_missing > 0.3 else "Minor impact on accuracy"
+        warning = f"{severity} — {len(defaulted_columns)} column(s) not found in your upload, using estimated defaults: {', '.join(defaulted_columns)}"
 
     return {
         "threshold": round(threshold * 100, 1),
         "total_customers": len(results),
         "flagged_count": sum(r["flagged"] for r in results),
+        "data_completeness_warning": warning,
         "results": results,
     }
