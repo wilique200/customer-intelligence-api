@@ -9,3 +9,5 @@ joblib==1.4.2
 python-multipart==0.0.9
 huggingface_hub==0.24.6
 requests==2.32.3
+statsmodels==0.14.2
+supabase==2.7.4
