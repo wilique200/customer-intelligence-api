@@ -26,7 +26,7 @@ async def analyze_data(file: UploadFile = File(...), user=Depends(get_current_us
         raise HTTPException(status_code=400, detail="Uploaded file has no data.")
 
     summary, forecast = da.analyze_dataset(df)
-    org_id = await get_user_organization_id(user.id)
+    org_id = await get_user_organization_id(user.id, user.email)
 
     supabase = get_supabase_admin_client()
     saved = supabase.table("data_analyst_analyses").insert({
@@ -49,7 +49,7 @@ class ChatRequest(BaseModel):
 @router.post("/chat")
 async def chat_with_data(payload: ChatRequest, user=Depends(get_current_user)):
     supabase = get_supabase_admin_client()
-    org_id = await get_user_organization_id(user.id)
+    org_id = await get_user_organization_id(user.id, user.email)
 
     analysis = (
         supabase.table("data_analyst_analyses")
