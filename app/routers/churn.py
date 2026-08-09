@@ -23,7 +23,7 @@ async def predict_churn(file: UploadFile = File(...), user=Depends(get_current_u
         raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
 
     results, threshold, warning = ml_models.run_churn_prediction(raw_df)
-    org_id = await get_user_organization_id(user.id)
+    org_id = await get_user_organization_id(user.id, user.email)
 
     supabase = get_supabase_admin_client()
     saved = supabase.table("churn_analyses").insert({
