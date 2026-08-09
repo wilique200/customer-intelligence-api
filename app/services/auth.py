@@ -31,7 +31,7 @@ async def get_current_user(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
-async def get_user_organization_id(user_id: str) -> str:
+async def get_user_organization_id(user_id: str, user_email: str = "") -> str:
     """Every authenticated user belongs to exactly one organization for
     now (the one auto-created at signup). Multi-org membership would
     extend this, not replace it."""
@@ -43,10 +43,11 @@ async def get_user_organization_id(user_id: str) -> str:
         .limit(1)
         .execute()
     )
+    print(f"[org lookup] user_id={user_id} email={user_email} rows_found={len(result.data)}")
     if not result.data:
         raise HTTPException(
             status_code=404,
-            detail="No organization found for this user — the signup trigger may not have run. "
-                   "Check schema.sql's handle_new_user() trigger is installed correctly.",
+            detail=f"No organization found for user_id={user_id} (email={user_email}). "
+                   f"Check this exact user_id exists in organization_members in Supabase.",
         )
     return result.data[0]["organization_id"]
