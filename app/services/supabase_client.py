@@ -14,6 +14,9 @@ from supabase import create_client, Client
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
+print(f"[startup diagnostic] SUPABASE_URL: set={bool(SUPABASE_URL)}, length={len(SUPABASE_URL)}, starts_with_https={SUPABASE_URL.startswith('https://')}")
+print(f"[startup diagnostic] SUPABASE_SERVICE_KEY: set={bool(SUPABASE_SERVICE_KEY)}, length={len(SUPABASE_SERVICE_KEY)}, starts_with_eyJ={SUPABASE_SERVICE_KEY.startswith('eyJ')}")
+
 _client: Client = None
 
 
