@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/history", tags=["history"])
 
 @router.get("/churn")
 async def churn_history(user=Depends(get_current_user)):
-    org_id = await get_user_organization_id(user.id)
+    org_id = await get_user_organization_id(user.id, user.email)
     supabase = get_supabase_admin_client()
     result = (
         supabase.table("churn_analyses")
@@ -25,7 +25,7 @@ async def churn_history(user=Depends(get_current_user)):
 
 @router.get("/data-analyst")
 async def data_analyst_history(user=Depends(get_current_user)):
-    org_id = await get_user_organization_id(user.id)
+    org_id = await get_user_organization_id(user.id, user.email)
     supabase = get_supabase_admin_client()
     result = (
         supabase.table("data_analyst_analyses")
