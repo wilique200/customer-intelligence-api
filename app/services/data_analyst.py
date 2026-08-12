@@ -6,10 +6,8 @@ uploaded, which is why there's no "load model" step in this file.
 """
 
 import pandas as pd
-import requests
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from app.services.ml_models import GEMINI_API_KEY, GEMINI_URL
-import json
+from app.services import gemini_client
 
 
 def detect_column_types(df: pd.DataFrame) -> dict:
@@ -96,27 +94,4 @@ def analyze_dataset(df: pd.DataFrame):
 
 
 def ask_gemini_about_data(question: str, summary: dict, forecast: dict) -> str:
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY isn't set on the server.")
-
-    context = json.dumps({"data_summary": summary, "forecast": forecast}, default=str)
-    prompt = f"""You are a data analyst assistant. Answer the user's question using ONLY the
-dataset summary below. If the summary doesn't contain enough information to answer
-confidently, say so honestly rather than guessing.
-
-Dataset summary:
-{context}
-
-Question: {question}
-
-Give a concise, direct answer (2-4 sentences), referencing specific numbers from the
-summary where relevant."""
-
-    resp = requests.post(
-        GEMINI_URL,
-        params={"key": GEMINI_API_KEY},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    return gemini_client.answer_data_question(question, summary, forecast)
