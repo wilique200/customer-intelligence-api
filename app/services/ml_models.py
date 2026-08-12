@@ -7,20 +7,13 @@ relocated so main.py doesn't have to hold all of this directly.
 """
 
 import os
-import json
 import joblib
 import numpy as np
 import pandas as pd
-import requests
 from huggingface_hub import hf_hub_download
+from app.services import gemini_client
 
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "your-hf-username/customer-intelligence-churn-model")
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# Model naming on the free tier shifts fairly often — if this 404s, check
-# the current model list at aistudio.google.com and swap the name below.
-GEMINI_MODEL = "gemini-2.0-flash-lite"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 MODEL_FILES = [
     "final_catboost_model.pkl", "final_lightgbm_model.pkl", "final_lr_model.pkl",
@@ -88,37 +81,7 @@ def normalize_columns(df: pd.DataFrame):
 
 
 def llm_map_columns(unmatched_uploaded: list, still_missing_expected: list) -> dict:
-    if not GEMINI_API_KEY or not unmatched_uploaded or not still_missing_expected:
-        return {}
-
-    prompt = f"""You are matching CSV column names to a fixed schema for a churn prediction model.
-Uploaded columns with no obvious match: {unmatched_uploaded}
-Schema columns still needing a match: {still_missing_expected}
-
-Return ONLY a JSON object mapping uploaded column name -> schema column name,
-including only genuinely confident semantic matches (e.g. "Bill Amount" ->
-"monthlycharges" is confident; do not guess when unsure). Omit any uploaded
-column with no confident match. Return just the JSON object, nothing else."""
-
-    try:
-        resp = requests.post(
-            GEMINI_URL,
-            params={"key": GEMINI_API_KEY},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        for fence in ("```json", "```"):
-            if text.startswith(fence):
-                text = text[len(fence):]
-            if text.endswith("```"):
-                text = text[:-3]
-        mapping = json.loads(text.strip())
-        return {k: v for k, v in mapping.items() if k in unmatched_uploaded and v in still_missing_expected}
-    except Exception as e:
-        print(f"WARNING: Gemini column mapping failed, continuing without it: {e}")
-        return {}
+    return gemini_client.map_columns(unmatched_uploaded, still_missing_expected)
 
 
 def fill_missing_columns(df: pd.DataFrame):
