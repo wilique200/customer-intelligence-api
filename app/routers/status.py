@@ -1,4 +1,4 @@
-"""Health check + "coming soon" stubs for modules not built yet."""
+"""Health check + "coming soon" stub for the one module not built yet."""
 
 from fastapi import APIRouter
 from app.services import ml_models
@@ -22,8 +22,3 @@ def sentiment_status():
 @router.get("/documents/status")
 def documents_status():
     return {"status": "coming_soon", "message": "Document Q&A module is planned but not yet built."}
-
-
-@router.get("/expenses/status")
-def expenses_status():
-    return {"status": "coming_soon", "message": "Expense Extractor module is planned but not yet built."}

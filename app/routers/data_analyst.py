@@ -5,7 +5,7 @@ time, since persistence makes that possible."""
 
 import pandas as pd
 from io import StringIO
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.services import data_analyst as da
@@ -75,3 +75,30 @@ async def chat_with_data(payload: ChatRequest, user=Depends(get_current_user)):
     ]).execute()
 
     return {"answer": answer}
+
+
+@router.post("/predict")
+async def predict_column(
+    file: UploadFile = File(...),
+    target_column: str = Form(...),
+    user=Depends(get_current_user),
+):
+    """Trains a quick model on a user-chosen column. Re-accepts the file
+    rather than reloading from Supabase, since only the EDA summary is
+    persisted, not the raw data — the frontend resends the same File
+    object it already has in memory from the initial analyze call, so
+    this is invisible to the user (no second upload prompt)."""
+    contents = await file.read()
+    try:
+        df = pd.read_csv(StringIO(contents.decode("utf-8")))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
+
+    try:
+        result = da.train_quick_model(df, target_column)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model training failed: {e}")
+
+    return result
