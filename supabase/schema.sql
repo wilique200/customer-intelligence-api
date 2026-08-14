@@ -9,6 +9,21 @@
 -- scoped to organization membership via row-level security below.
 
 -- ============================================================
+-- CLEANUP FIRST — safe to run whether this is a fresh project or a
+-- retry after a partial/failed run. DROP ... IF EXISTS no-ops on a
+-- clean project, and clears out any half-built state from before.
+-- ============================================================
+drop trigger if exists on_auth_user_created on auth.users;
+drop function if exists handle_new_user();
+drop table if exists expense_records cascade;
+drop table if exists data_analyst_chat_messages cascade;
+drop table if exists data_analyst_analyses cascade;
+drop table if exists churn_analyses cascade;
+drop table if exists organization_members cascade;
+drop table if exists organizations cascade;
+drop function if exists is_org_member(uuid);
+
+-- ============================================================
 -- ORGANIZATIONS
 -- One per signed-up business, created automatically on signup via the
 -- trigger at the bottom of this file. Multiple team members can belong
@@ -90,6 +105,25 @@ create index idx_chat_messages_analysis
   on data_analyst_chat_messages (analysis_id, created_at);
 
 -- ============================================================
+-- EXPENSE RECORDS
+-- One row per receipt/invoice a user confirms after Gemini reads it.
+-- ============================================================
+create table expense_records (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  uploaded_by uuid not null references auth.users(id) on delete cascade,
+  vendor text,
+  expense_date date,
+  amount numeric(12,2),
+  category text,
+  currency text not null default 'USD',
+  created_at timestamptz not null default now()
+);
+
+create index idx_expense_records_org_created
+  on expense_records (organization_id, created_at desc);
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- Every table is scoped to organizations the requesting user belongs to.
 -- ============================================================
@@ -98,16 +132,18 @@ alter table organization_members enable row level security;
 alter table churn_analyses enable row level security;
 alter table data_analyst_analyses enable row level security;
 alter table data_analyst_chat_messages enable row level security;
+alter table expense_records enable row level security;
 
 -- Helper: is the current user a member of this organization?
 create or replace function is_org_member(oid uuid)
 returns boolean
 language sql
 security definer
+set search_path = public
 stable
 as $$
   select exists (
-    select 1 from organization_members
+    select 1 from public.organization_members
     where organization_id = oid and user_id = auth.uid()
   );
 $$;
@@ -152,6 +188,14 @@ create policy "members can insert chat messages"
   on data_analyst_chat_messages for insert
   with check (is_org_member(organization_id));
 
+create policy "members can view expense records"
+  on expense_records for select
+  using (is_org_member(organization_id));
+
+create policy "members can insert expense records"
+  on expense_records for insert
+  with check (is_org_member(organization_id));
+
 -- ============================================================
 -- AUTO-CREATE a default organization + membership on signup.
 -- This is the single most common place FinGuard's own fix_*.sql files
@@ -163,15 +207,16 @@ create or replace function handle_new_user()
 returns trigger
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   new_org_id uuid;
 begin
-  insert into organizations (name, created_by)
+  insert into public.organizations (name, created_by)
   values ('My Organization', new.id)
   returning id into new_org_id;
 
-  insert into organization_members (organization_id, user_id, role)
+  insert into public.organization_members (organization_id, user_id, role)
   values (new_org_id, new.id, 'owner');
 
   return new;
