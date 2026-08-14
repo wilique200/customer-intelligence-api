@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.services import ml_models
-from app.routers import churn, data_analyst, history, status
+from app.routers import churn, data_analyst, history, status, expenses
 
 
 @asynccontextmanager
@@ -40,3 +40,4 @@ app.include_router(status.router)
 app.include_router(churn.router)
 app.include_router(data_analyst.router)
 app.include_router(history.router)
+app.include_router(expenses.router)
