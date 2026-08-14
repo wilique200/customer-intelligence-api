@@ -77,3 +77,33 @@ summary where relevant."""
     model = genai.GenerativeModel(GEMINI_MODEL)
     response = model.generate_content(prompt)
     return response.text.strip()
+
+
+_RECEIPT_PROMPT = """You are reading a photographed or scanned receipt or invoice.
+Extract the following as JSON, with these exact keys:
+- vendor (string, the business name)
+- date (string, YYYY-MM-DD format; your best reading of the receipt date)
+- amount (number, the total amount — just the number, no currency symbol)
+- category (string, one of: Software, Travel, Office Supplies, Meals, Utilities,
+  Marketing, Professional Services, Other — pick the closest fit)
+- currency (string, 3-letter code, e.g. USD — guess from context if not explicit)
+
+If you genuinely cannot read a field, use null for that key rather than guessing.
+Return ONLY the JSON object, nothing else."""
+
+
+def parse_receipt_image(image_bytes: bytes, mime_type: str) -> dict:
+    """Send a photographed/scanned receipt straight to Gemini's vision
+    input — no separate OCR service needed, same reasoning and same
+    proven call shape as FinGuard's parse_bill_image."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY isn't set on the server.")
+
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    image_part = {"mime_type": mime_type, "data": image_bytes}
+
+    response = model.generate_content(
+        [_RECEIPT_PROMPT, image_part],
+        generation_config={"response_mime_type": "application/json"},
+    )
+    return json.loads(_clean_json_response(response.text))
